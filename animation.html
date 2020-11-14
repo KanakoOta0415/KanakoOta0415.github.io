@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+	<meta charset="UTF-8">
+	<script src="https://cdn.jsdelivr.net/npm/p5"></script>
+  <script src="https://unpkg.com/ml5@0.4.3/dist/ml5.min.js"></script>
+  <title>pose.netアニメーション</title>
+	<center>
+		<h1>変身ポーズメーカー(腕や顔を自由に動かしてみよう)</h1>
+		<button id="start_button"
+						style="background-color:#000;color:white;text-decoration: none;font-size:2em;padding-top: 10px;padding-bottom: 10px;padding-right: 10px;padding-left: 10px;">
+						スタート
+		</button>
+	</center>
+	<h1>遊び方</h1>
+	
+	<h2>①スタートボタンをクリックしたら好きな変身ポーズをとってね<br>
+			②顔を↓↑↓に動かして変身ポーズを登録しよう<br>
+			③動画が再生するよ、赤ずきんちゃんの行く末やいかに！？<br>
+			④①②で登録したポーズをガイドに合わせてしばらくとってね<br>
+			⑤ポーズがうまく取れると動画が再生するよ<br>
+	</h2>
+	<center>
+		<h2 id=text01>「ここに説明文が出るよ」</h2>
+		<h1 id=response></h1>
+		<form name="form_count"><input name="counter" type="text" size="10"></form>
+		<video id="movie01" src="movie01.mp4" width="windowWidth" controls>
+			<p>ご使用のブラウザでは動画再生に対応していません</p>
+		</video>
+		<video id="movie02" src="movie02.mp4" width="windowWidth" controls>
+			<p>ご使用のブラウザでは動画再生に対応していません</p>
+		</video>
+	</center>
+</head>
+
+	
+<script>
+let video;
+let poseNet;
+let poses = [];
+//let skeletons = [];
+let w;
+let h;
+let button;
+let page_count = 0;
+let keypoint0={position:{x:w/2,y:h/4}};//0は鼻
+let keypoint1={position:0};//1は左目
+let keypoint2={position:0};//2は右目
+let keypoint3={position:0};//3は左耳
+let keypoint4={position:0};//4は右耳
+let keypoint5={position:{x:0,y:0}};//5は左肩
+let keypoint6={position:{x:0,y:0}};//6は右肩
+let keypoint7={position:{x:w+200,y:3*h/4}};//7は左肘
+let keypoint8={position:{x:w-200,y:3*h/4}};//8は右肘
+let keypoint9={position:{x:w+100,y:3*h/4}};//9は左手首
+let keypoint10={position:{x:w-100,y:3*h/4}};//10は右手首
+let anime_face_c=[];
+let face_state=0; 
+let anime_arm=[];
+let count=3;
+let anime_body;
+	
+let playing = false;
+let movie01;//動画前半(お使いに行って→狼が現れるまで)
+let movie02;//動画後半(変身ムービー→END)
+
+let nose_y;
+let nose_x;
+let nose_r;
+let keypoint0_r;
+let nose;
+let arm_length;//肘位置//二の腕の画像のwidth
+let x1,x2,x3,x4,y1,y2,y3,y4,a,a2,b,b2;
+let r1,r2,r3,l1,l2,l3;
+	
+//arm_memory用
+let memory_r1;
+let memory_r2;
+let memory_r3;
+let memory_l1;
+let memory_l2;
+let memory_l3;
+let second_count = 0;
+	
+//arm_guide用
+let guide01_r1_x;
+let guide01_r1_y;						
+let guide02_r1_x;
+let guide02_r1_y;
+let guide01_l1_x;
+let guide01_l1_y;
+let guide02_l1_x;
+let guide02_l1_y;	
+
+function preload() { //画像読み込み
+	//顔
+	anime_face_c[0] = loadImage("anime_face_c_00.png");//右
+	anime_face_c[2] = loadImage("anime_face_c_02.png");//正面
+	anime_face_c[4] = loadImage("anime_face_c_04.png");//左				
+	anime_face_c[5] = loadImage("anime_face_updown_00.png");//上				
+	anime_face_c[6] = loadImage("anime_face_updown_04.png");//下				
+	//腕
+	anime_arm[0] = loadImage("anime_arm_00.png");//右肩から右肘
+	anime_arm[1] = loadImage("anime_arm_01.png");//右肘から右手首
+	anime_arm[2] = loadImage("anime_arm_02.png");//左肩から左肘
+	anime_arm[3] = loadImage("anime_arm_03.png");//左肘から左手首
+	anime_arm[4] = loadImage("anime_arm_04.png");//右肘から右手首(肘から下側)
+	anime_arm[5] = loadImage("anime_arm_05.png");//左肘から左手首(肘から下側)
+	//胴体
+	anime_body = loadImage("anime_body.png");
+}
+function setup() {
+	imageMode(CENTER)//画像の移動基準を画像の中心にする
+	w=windowWidth;
+	h=windowHeight;
+	arm_length = w/8;//肩から肘の長さを固定
+	createCanvas(w,h);
+	//movieの設定
+	movie01 = document.querySelector("#movie01");
+	movie01.width=w;
+	movie01.height=h;
+	movie01.hidden=true;
+	movie01.onended=function(){//動画が再生し終わったら起動する
+		console.log("movie01ended");
+		movie01.hidden=true;
+		page_count=3;
+	}
+	movie02 = document.querySelector("#movie02");
+	movie02.width=w;
+	movie02.height=h;
+	movie02.hidden=true;
+	movie02.onended=function(){//動画が再生し終わったら起動する
+		console.log("movie02ended");
+		movie02.hidden=true;
+		page_count=5;
+	}
+
+	//ビデオカメラの設定
+	video = createCapture(VIDEO);
+	video.hide();
+  // Create a new poseNet method with a single detection
+  poseNet = ml5.poseNet(video, {detectionType: 'single',scoreThreshold: 0.3},modelReady);
+	//{detectionType: 'single'}デフォルトは複数人を認識してしまうのでsingleにする
+	//ml5の機能を通してカメラの画像をposenetオブジェクトとして定義
+  // This sets up an event that fills the global variable "poses"
+  // with an array every time new poses are detected
+  poseNet.on('pose', function(results) {//posenetオブジェクトにはイベント定義ができるonでposeというイベント発生　結果はresult
+  	poses = results;
+  });
+  // Hide the video element, and just show the canvas
+  //video.hide();//
+}
+
+function modelReady() {
+	select('#status').html('Model Loaded');
+}
+
+function draw() {
+  image(video, 0, 0, width, height);
+	// We can call both functions to draw all keypoints and the skeletons
+	background(255);
+	drawKeypoints();
+	console.log(page_count);
+	if(page_count==0){facemove();
+										armmove();
+									 }//スタート画面
+	if(page_count==1){document.getElementById("text01").innerHTML = "「好きなポーズをとって顔を↓↑↓に動かしてポーズを記録しよう」";
+										facemove();
+										armmove();
+										showface();
+										}//登録画面
+	if(page_count==2){document.getElementById("text01").innerHTML = "「赤ずきんとうさぎ」前半";
+										movie01.hidden=false;
+										movie01.play();
+									 }//動画01//コールバックする//終わったらpage_countが動く
+	if(page_count==3){facemove();
+										armmove();
+										document.getElementById("text01").innerHTML = "「記録したポーズをもう一度とって変身しよう!赤丸が肘、青丸が手首の位置だよ」"
+										arm_response();//僅差かどうか判定する
+										}
+	if(page_count==4){document.getElementById("text01").innerHTML = "「赤ずきんとうさぎ」後半";
+										document.getElementById("response").innerHTML = "";
+										movie02.hidden=false;
+										movie02.play();
+									 }//動画02//コールバックする//終わったらpage_countが動く
+	if(page_count==5){document.getElementById("start_button").innerHTML = "もう一度遊ぶにはページをリロード";
+										document.getElementById("text01").innerHTML = "Thank You For Playing！！";
+									 }
+	//drawSkeleton();
+}
+  // A function to draw ellipses over the detected keypoints
+function drawKeypoints() {
+  // Loop through all the poses detected
+  for (let i = 0; i < poses.length; i++) {
+  // For each pose detected, loop through all the keypoints
+  	for (let j = 0; j < poses[0].pose.keypoints.length; j++) { //keypoints
+    // A keypoint is an object describing a body part (like rightArm or leftShoulder)
+			i=0;
+			// scoreThreshold: 0.5で固定の値にできるかも
+			if(poses[i].pose.keypoints[0].score>0.3){
+				keypoint0 = poses[i].pose.keypoints[0];
+			}//0は鼻
+			if(poses[i].pose.keypoints[1].score>0.3){
+				keypoint1 = poses[i].pose.keypoints[1];
+			}//1は左目
+			if(poses[i].pose.keypoints[2].score>0.3){
+				keypoint2 = poses[i].pose.keypoints[2];
+			}//2は右目
+			if(poses[i].pose.keypoints[3].score>0.3){
+				keypoint3 = poses[i].pose.keypoints[3];
+			}//3は左耳
+			if(poses[i].pose.keypoints[4].score>0.3){
+				keypoint4 = poses[i].pose.keypoints[4];
+			}//4は右耳
+			if(poses[i].pose.keypoints[5].score>0.3){
+				keypoint5 = poses[i].pose.keypoints[5];
+			}//5は左肩				
+			if(poses[i].pose.keypoints[6].score>0.3){
+				keypoint6 = poses[i].pose.keypoints[6];
+			}//6は右肩
+			if(poses[i].pose.keypoints[7].score>0.3){
+				keypoint7 = poses[i].pose.keypoints[7];
+			}//7は左肘
+			if(poses[i].pose.keypoints[8].score>0.3){
+				keypoint8 = poses[i].pose.keypoints[8]
+			}//8は右肘
+			if(poses[i].pose.keypoints[9].score>0.3){
+				keypoint9 = poses[i].pose.keypoints[9]
+			}//9は左手首
+			if(poses[i].pose.keypoints[10].score>0.3){
+				keypoint10= poses[i].pose.keypoints[10]
+			}//10は右手首
+		}										
+	}			
+}
+
+document.getElementById("start_button").onclick = function() {
+  document.getElementById("start_button").innerHTML = "クリックされた";
+	arm_memory();
+	page_count=1;
+};
+	
+function facemove(){
+	nose_y=(keypoint3.position.y+keypoint4.position.y)/2;//顔の仮中心座標x
+	nose_x=(keypoint3.position.x+keypoint4.position.x)/2;//顔の仮中心座標y
+	nose_r = Math.sqrt( Math.pow( nose_x-keypoint4.position.x, 2 ) + Math.pow( nose_y-keypoint4.position.y, 2 ) ) ;//顔の仮中心から右耳までの距離
+	keypoint0_r = Math.sqrt( Math.pow( nose_x-keypoint0.position.x, 2 ) + Math.pow( nose_y-keypoint0.position.y, 2 ) )*2 ;//顔の仮中心から鼻までの距離
+	image(anime_body,w/2,h/2,w,h);
+//fill(0);
+//ellipse(keypoint0.position.x,keypoint0.position.y,20);
+//fill(255,0,0);
+//ellipse(keypoint3.position.x,keypoint3.position.y,20);//左耳
+//fill(0,0,255)
+//ellipse(keypoint4.position.x,keypoint4.position.y,20);//右耳			
+//fill(0,0,255);
+//ellipse(nose_x,nose_y,keypoint0_r);
+//fill(0,255,0);
+//ellipse(nose_x,nose_y,10);
+//fill(255,0,0,70);
+//ellipse(nose_x,nose_y,nose_r);
+	push();
+	translate(w/2,h/2);
+	if(keypoint0_r<nose_r){
+		count_face=2;//正面
+	}else if(keypoint2.position.x<keypoint0.position.x&&keypoint0.position.x<keypoint1.position.x){
+		if(keypoint0.position.y<nose_y){
+			count_face=5;//上			
+		}else if(keypoint0.position.y>nose_y){
+			count_face=6;//下			
+   	}
+	}else if(keypoint0.position.x<nose_x){
+    nose =Math.atan2(keypoint0.position.y- nose_y ,-keypoint0.position.x+nose_x );
+    rotate(nose);//鼻の向きで回転(鼻と顔の仮中心)
+    count_face=0;//右
+  }else{
+    nose =Math.atan2(keypoint0.position.y- nose_y ,-keypoint0.position.x+nose_x );
+    rotate(nose);//鼻の向きで回転(鼻と顔の仮中心)
+    count_face=4;//左
+  }
+	image(anime_face_c[count_face],0,0,w,h);
+	pop();
+}
+  
+function showface(){//頷いたかどうかの判定function
+	//console.log(face_state);
+  if(face_state==0 && count_face==6 )face_state=1;//下
+	if(face_state==1 && count_face==2 )face_state=2;//正面
+  if(face_state==2 && count_face==5 )face_state=3;//上
+  if(face_state==3 && count_face==2 )face_state=4;//正面
+  if(face_state==4 && count_face==6 )face_state=5;//下
+  if(face_state==5){
+	arm_memory();//登録用function					
+	
+	//arm_guide用
+	//右腕
+	guide01_r1_x=x2;
+	guide01_r1_y=y2;					
+	guide02_r2_x=x5;
+	guide02_r2_y=y5;		
+	//左腕
+	guide01_l1_x=x4;
+	guide01_l1_y=y4;		
+	guide02_l2_x=x6;
+	guide02_l2_y=y6;
+	
+	face_state=0;//登録が終わったら初期値に戻す
+	page_count=2;			
+ 	}  
+}
+	
+function armmove(){//腕の回転
+	//右腕
+	//右肩から肘
+	push();
+	x1=w*3/5//右肩
+	y1=h*2/3;	
+	translate(x1,y1);	
+	a=Math.atan2(keypoint8.position.y-keypoint6.position.y,-keypoint8.position.x+keypoint6.position.x);//肩6から肘8までの角度
+	rotate(a);
+	image(anime_arm[0],0,0,w,h);
+	pop();
+	
+	//右肘から右手首
+	push();
+	x2=x1+arm_length*Math.cos(a);
+	//arm_lengthは二の腕の画像のwidthにしたかったけどだめだったので今回はw/8
+	y2=y1+arm_length*Math.sin(a);
+	translate(x2,y2);
+	b=Math.atan2(keypoint10.position.y-keypoint8.position.y,-keypoint10.position.x+keypoint8.position.x);//肘8から手首10までの角度
+	rotate(b);//回転する//xは-にしないと鏡にならない
+	if(keypoint8.position.y-keypoint10.position.y<0){
+		image(anime_arm[4],0,0,w,h);//手首が肘より下側の時の画像
+	}else{
+		image(anime_arm[1],0,0,w,h);//手首が肘より上側の画像
+	}	
+	pop();
+	
+	//arm_guide用
+	push();
+	x5=x2+arm_length*Math.cos(b);//右肘から右手首まで
+	y5=y2+arm_length*Math.sin(b);
+	translate(x5,y5);
+	rotate(b);
+	pop();
+												
+	//左腕
+	//左肩から左肘
+	push();
+	x3=w*2/5//左肩
+	y3=h*2/3;
+	translate(x3,y3);	
+	a2=Math.atan2(-keypoint7.position.y+keypoint5.position.y,keypoint7.position.x-keypoint5.position.x);//肩5から肘7までの角度
+	rotate(a2);
+	image(anime_arm[2],0,0,w,h);
+	pop();
+	//左肘から左手首
+	push();
+	x4=x3-arm_length*Math.cos(a2);
+	y4=y3-arm_length*Math.sin(a2);		
+	translate(x4,y4);
+	b2=Math.atan2(-keypoint9.position.y+keypoint7.position.y,keypoint9.position.x-keypoint7.position.x);
+	rotate(b2);
+	if(keypoint7.position.y-keypoint9.position.y<0){
+		image(anime_arm[5],0,0,w,h);//手首が肘より下側の画像
+	}else{
+		image(anime_arm[3],0,0,w,h);//手首が肘より上側の画像
+	}
+	pop();
+	
+	//arm_guide用
+	push();
+	x6=x4-arm_length*Math.cos(b2);
+	y6=y4-arm_length*Math.sin(b2);
+	translate(x6,y6);
+	rotate(b2);
+	pop();
+		
+	//arm_memory用		
+	//右手首と右肩,右肘と右肩の角度
+	r1　=　Math.atan2(keypoint10.position.y-keypoint6.position.y,keypoint10.position.x-keypoint6.position.x)*10;
+	r2　=　Math.atan2(keypoint8.position.y-keypoint6.position.y,keypoint8.position.x-keypoint6.position.x)*10;
+	//右手首と右肩の2点間の距離
+	r3  = Math.sqrt(Math.pow(keypoint10.position.x-keypoint6.position.x,2)
+													+Math.pow(keypoint10.position.y-keypoint6.position.y,2));
+	//左手首と左肩,左肘と左肩の角度
+	l1 = Math.atan2(keypoint9.position.y-keypoint5.position.y,keypoint9.position.x-keypoint5.position.x)*10;
+	l2　=　Math.atan2(keypoint7.position.y-keypoint5.position.y,keypoint7.position.x-keypoint5.position.x)*10;
+	//左手首と左肩の2点間の距離
+	l3  = Math.sqrt(Math.pow(keypoint9.position.x-keypoint5.position.x,2)
+													+Math.pow(keypoint9.position.y-keypoint5.position.y,2));	
+}	
+	
+function arm_memory(){
+	memory_r1=r1;
+	memory_r2=r2;
+	memory_r3=r3;			
+	memory_l1=l1;
+	memory_l2=l2;
+	memory_l3=l3;
+	//console.log(memory_r1);
+	//console.log(memory_r2);
+	//console.log(memory_r3);
+	document.getElementById("text01").innerHTML = "記録しました";
+}
+function arm_response(){
+	arm_guide();
+		
+	if(memory_r1-50<r1&&r1<memory_r1+50 && 
+		memory_r2-50<r2&&r2<memory_r2+50 && 
+		memory_r3-100<r3&&r3<memory_r3+100 &&
+		memory_l1-50<l1&&l1<memory_l1+50 && 
+		memory_l2-50<l2&&l2<memory_l2+50 &&
+		memory_l3-100<l3&&l3<memory_l3+100	 
+	){
+		console.log("僅差である");
+		document.getElementById("response").innerHTML = "よし！そのまま！！";
+		//console.log(r1);
+		//console.log(r2);
+		//console.log(r3);
+		setTimeout(countup,1000); //1秒毎にcountupを呼び出し
+	}else{
+		console.log("僅差ではない");
+		document.getElementById("response").innerHTML = "惜しい！！";
+		//console.log(r1);
+		//console.log(r2);
+		//console.log(r3);
+		second_count=0;
+		document.form_count.reset;
+	}
+}
+
+function countup() {
+	second_count++;
+	document.form_count.counter.value = second_count;
+				
+	if(second_count>10){
+		page_count=4;
+		second_reset=0;
+		document.form_count.reset();//初期値に戻す
+	}else{
+		arm_response();
+	}
+}
+	
+function arm_guide(){
+	line(x1,y1,guide01_r1_x,guide01_r1_y);//右肩から右肘
+	line(x3,y3,guide01_l1_x,guide01_l1_y);//左肩から左肘
+	line(guide01_r1_x,guide01_r1_y,guide02_r2_x,guide02_r2_y);//右肘から右手首
+	line(guide01_l1_x,guide01_l1_y,guide02_l2_x,guide02_l2_y);//左肘から左手首
+	fill(255,0,0);
+	ellipse(guide01_r1_x,guide01_r1_y,100,100);//右腕の肘
+	ellipse(guide01_l1_x,guide01_l1_y,100,100);//左腕の肘
+	fill(0,0,255);
+	ellipse(guide02_r2_x,guide02_r2_y,100,100);//右腕の手首
+	ellipse(guide02_l2_x,guide02_l2_y,100,100);//左腕の手首
+}
+</script>
+
+<body>
+    <div id="status"></div>
+    <div id="result"></div>
+    <div id="probability"></div>
+</body>
+	
+</html>
